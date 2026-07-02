@@ -1,0 +1,1707 @@
+```react
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { 
+  FileText, 
+  FileSpreadsheet, 
+  Presentation, 
+  Plus, 
+  Search, 
+  Sparkles, 
+  Settings, 
+  FolderOpen, 
+  Clock, 
+  Trash2, 
+  Download, 
+  Bold, 
+  Italic, 
+  Underline, 
+  AlignLeft, 
+  AlignCenter, 
+  AlignRight, 
+  FileDown, 
+  ChevronLeft, 
+  ChevronRight, 
+  Play, 
+  PlusCircle, 
+  MinusCircle, 
+  Grid3X3, 
+  Home, 
+  User, 
+  Menu, 
+  X,
+  RefreshCw,
+  Layout,
+  Palette,
+  CheckCircle2,
+  AlertCircle
+} from 'lucide-react';
+
+// --- CONFIGURATION & FIREBASE BOOTSTRAP ---
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'office-hub-suite';
+const apiKey = ""; // Runtime-injected API key
+
+// Simulates prompt helper for Gemini
+const callGemini = async (prompt, systemInstruction = "", formatJson = false) => {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+  let delay = 1000;
+  
+  const payload = {
+    contents: [{ parts: [{ text: prompt }] }],
+  };
+
+  if (systemInstruction) {
+    payload.systemInstruction = { parts: [{ text: systemInstruction }] };
+  }
+
+  if (formatJson) {
+    payload.generationConfig = {
+      responseMimeType: "application/json"
+    };
+  }
+
+  for (let i = 0; i < 5; i++) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const result = await response.json();
+      return result.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    } catch (error) {
+      if (i === 4) throw error;
+      await new Promise(resolve => setTimeout(resolve, delay));
+      delay *= 2;
+    }
+  }
+};
+
+export default function App() {
+  // --- CENTRAL STATE ---
+  const [currentView, setCurrentView] = useState('dashboard'); // 'dashboard' | 'word' | 'excel' | 'powerpoint' | 'present'
+  const [documents, setDocuments] = useState(() => {
+    const saved = localStorage.getItem('office_docs_v1');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { console.error(e); }
+    }
+    return [
+      {
+        id: '1',
+        title: 'Project Launch Memo',
+        type: 'word',
+        updatedAt: new Date(Date.now() - 3600000).toLocaleString(),
+        content: '<h1>Project Launch Memo</h1><p>Welcome to the <strong>Office Suite Hub</strong>. This document was pre-created for you. Feel free to use the <strong>AI Copilot</strong> in the sidebar to draft more paragraphs, rewrite content, or adjust formatting.</p><p>Key Milestones for this quarter:</p><ul><li>Complete Core UI elements & transitions.</li><li>Implement the real Gemini API helper system.</li><li>Ensure offline-friendly storage state management.</li></ul>'
+      },
+      {
+        id: '2',
+        title: 'Q3 Sales Report & Projections',
+        type: 'excel',
+        updatedAt: new Date(Date.now() - 7200000).toLocaleString(),
+        content: {
+          grid: [
+            ['Product Category', 'July Sales', 'August Sales', 'September Sales', 'Quarterly Total'],
+            ['Enterprise Software', '12500', '14200', '15800', '=SUM(B2:D2)'],
+            ['Cloud Solutions', '8400', '9100', '10500', '=SUM(B3:D3)'],
+            ['On-site Consulting', '4500', '4800', '5200', '=SUM(B4:D4)'],
+            ['Hardware Support', '3100', '2900', '3400', '=SUM(B5:D5)'],
+            ['Combined Metrics', '=AVERAGE(B2:B5)', '=AVERAGE(C2:C5)', '=AVERAGE(D2:D5)', '=SUM(E2:E5)'],
+          ],
+          styles: {
+            'A1:E1': { bold: true, bg: 'bg-emerald-100', color: 'text-emerald-900' },
+            'A6:E6': { bold: true, bg: 'bg-gray-100' }
+          }
+        }
+      },
+      {
+        id: '3',
+        title: 'Investor Pitch Deck',
+        type: 'powerpoint',
+        updatedAt: new Date(Date.now() - 10800000).toLocaleString(),
+        content: {
+          slides: [
+            {
+              id: 's1',
+              title: 'Welcome to Office Suite Hub',
+              subtitle: 'A fully integrated cloud-like productivity suite',
+              bullets: [
+                'Responsive design optimized for both mobile & desktop devices',
+                'Simulated Excel formula engine with evaluation of basic SUM and AVERAGE',
+                'PowerPoint viewer with built-in slideshow presentation view'
+              ],
+              bgClass: 'from-orange-500 to-red-600'
+            },
+            {
+              id: 's2',
+              title: 'AI Copilot Integration',
+              subtitle: 'Generative smarts powered by Gemini 2.5 Flash',
+              bullets: [
+                'Draft complete documents, generate entire Excel datasets, or create presentation slides',
+                'Polished structured output with automated schemas',
+                'Exponential retry handling logic for network robustness'
+              ],
+              bgClass: 'from-blue-600 to-indigo-800'
+            }
+          ]
+        }
+      }
+    ];
+  });
+
+  const [activeDocId, setActiveDocId] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterType, setFilterType] = useState('all'); // 'all' | 'word' | 'excel' | 'powerpoint'
+  const [isCopilotOpen, setIsCopilotOpen] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [notification, setNotification] = useState(null);
+
+  // --- PERSISTENCE ---
+  useEffect(() => {
+    localStorage.setItem('office_docs_v1', JSON.stringify(documents));
+  }, [documents]);
+
+  const triggerNotification = (text, type = 'success') => {
+    setNotification({ text, type });
+    setTimeout(() => setNotification(null), 3000);
+  };
+
+  // --- NAVIGATION ---
+  const activeDoc = useMemo(() => {
+    return documents.find(d => d.id === activeDocId);
+  }, [documents, activeDocId]);
+
+  const openDocument = (id) => {
+    const doc = documents.find(d => d.id === id);
+    if (doc) {
+      setActiveDocId(id);
+      setCurrentView(doc.type);
+    }
+  };
+
+  const createDocument = (type) => {
+    let newDocContent = '';
+    let title = `Untitled Document`;
+
+    if (type === 'word') {
+      newDocContent = '<h2>Untitled Document</h2><p>Start writing your thoughts or use the AI Copilot to generate a template...</p>';
+      title = `Document ${documents.filter(d => d.type === 'word').length + 1}`;
+    } else if (type === 'excel') {
+      newDocContent = {
+        grid: Array(15).fill(null).map(() => Array(8).fill('')),
+        styles: {}
+      };
+      // Populate basic empty template headers
+      newDocContent.grid[0] = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+      title = `Sheet ${documents.filter(d => d.type === 'excel').length + 1}`;
+    } else if (type === 'powerpoint') {
+      newDocContent = {
+        slides: [
+          {
+            id: 's-init',
+            title: 'Click to edit Title',
+            subtitle: 'Click to edit Subtitle',
+            bullets: ['Point one', 'Point two'],
+            bgClass: 'from-rose-500 to-orange-500'
+          }
+        ]
+      };
+      title = `Presentation ${documents.filter(d => d.type === 'powerpoint').length + 1}`;
+    }
+
+    const newDoc = {
+      id: Date.now().toString(),
+      title,
+      type,
+      updatedAt: new Date().toLocaleString(),
+      content: newDocContent
+    };
+
+    setDocuments(prev => [newDoc, ...prev]);
+    setActiveDocId(newDoc.id);
+    setCurrentView(type);
+    triggerNotification(`Created new ${type.toUpperCase()}`);
+  };
+
+  const deleteDocument = (id, e) => {
+    if (e) e.stopPropagation();
+    if (window.confirm("Are you sure you want to delete this document?")) {
+      setDocuments(prev => prev.filter(d => d.id !== id));
+      triggerNotification("Document deleted", "info");
+    }
+  };
+
+  const updateActiveDocContent = (newContent) => {
+    setDocuments(prev => prev.map(doc => {
+      if (doc.id === activeDocId) {
+        return {
+          ...doc,
+          content: newContent,
+          updatedAt: new Date().toLocaleString()
+        };
+      }
+      return doc;
+    }));
+  };
+
+  const renameDocument = (id, newTitle) => {
+    setDocuments(prev => prev.map(doc => {
+      if (doc.id === id) {
+        return { ...doc, title: newTitle || 'Untitled' };
+      }
+      return doc;
+    }));
+  };
+
+  // Filtered documents
+  const filteredDocs = documents.filter(doc => {
+    const matchesSearch = doc.title.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesType = filterType === 'all' || doc.type === filterType;
+    return matchesSearch && matchesType;
+  });
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col antialiased selection:bg-indigo-200">
+      
+      {/* Toast Notification */}
+      {notification && (
+        <div className="fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg bg-slate-900 text-white animate-bounce">
+          {notification.type === 'success' ? <CheckCircle2 className="text-emerald-400 w-5 h-5" /> : <AlertCircle className="text-amber-400 w-5 h-5" />}
+          <span className="text-sm font-medium">{notification.text}</span>
+        </div>
+      )}
+
+      {/* Main Viewport switcher */}
+      {currentView === 'dashboard' && (
+        <DashboardView 
+          filteredDocs={filteredDocs}
+          searchQuery={searchQuery}
+          setSearchQuery={setSearchQuery}
+          filterType={filterType}
+          setFilterType={setFilterType}
+          createDocument={createDocument}
+          openDocument={openDocument}
+          deleteDocument={deleteDocument}
+          renameDocument={renameDocument}
+        />
+      )}
+
+      {currentView === 'word' && activeDoc && (
+        <WordEditor 
+          doc={activeDoc}
+          onBack={() => setCurrentView('dashboard')}
+          onUpdate={updateActiveDocContent}
+          onRename={(title) => renameDocument(activeDoc.id, title)}
+          isCopilotOpen={isCopilotOpen}
+          setIsCopilotOpen={setIsCopilotOpen}
+          aiPrompt={aiPrompt}
+          setAiPrompt={setAiPrompt}
+          aiLoading={aiLoading}
+          setAiLoading={setAiLoading}
+          triggerNotification={triggerNotification}
+        />
+      )}
+
+      {currentView === 'excel' && activeDoc && (
+        <ExcelEditor 
+          doc={activeDoc}
+          onBack={() => setCurrentView('dashboard')}
+          onUpdate={updateActiveDocContent}
+          onRename={(title) => renameDocument(activeDoc.id, title)}
+          isCopilotOpen={isCopilotOpen}
+          setIsCopilotOpen={setIsCopilotOpen}
+          aiPrompt={aiPrompt}
+          setAiPrompt={setAiPrompt}
+          aiLoading={aiLoading}
+          setAiLoading={setAiLoading}
+          triggerNotification={triggerNotification}
+        />
+      )}
+
+      {currentView === 'powerpoint' && activeDoc && (
+        <PowerPointEditor 
+          doc={activeDoc}
+          onBack={() => setCurrentView('dashboard')}
+          onUpdate={updateActiveDocContent}
+          onRename={(title) => renameDocument(activeDoc.id, title)}
+          isCopilotOpen={isCopilotOpen}
+          setIsCopilotOpen={setIsCopilotOpen}
+          aiPrompt={aiPrompt}
+          setAiPrompt={setAiPrompt}
+          aiLoading={aiLoading}
+          setAiLoading={setAiLoading}
+          triggerNotification={triggerNotification}
+          onPresent={() => setCurrentView('present')}
+        />
+      )}
+
+      {currentView === 'present' && activeDoc && (
+        <PresentationViewer 
+          doc={activeDoc} 
+          onClose={() => setCurrentView('powerpoint')} 
+        />
+      )}
+
+    </div>
+  );
+}
+
+// ==========================================
+// 1. DASHBOARD VIEW COMPONENT
+// ==========================================
+function DashboardView({ 
+  filteredDocs, 
+  searchQuery, 
+  setSearchQuery, 
+  filterType, 
+  setFilterType, 
+  createDocument, 
+  openDocument, 
+  deleteDocument,
+  renameDocument
+}) {
+  const [activeTab, setActiveTab] = useState('home'); // 'home' | 'apps' | 'templates'
+  const [editingTitleId, setEditingTitleId] = useState(null);
+  const [tempTitle, setTempTitle] = useState('');
+
+  const getDocIcon = (type, className = "w-6 h-6") => {
+    switch (type) {
+      case 'word': return <FileText className={`${className} text-blue-600`} />;
+      case 'excel': return <FileSpreadsheet className={`${className} text-emerald-600`} />;
+      case 'powerpoint': return <Presentation className={`${className} text-orange-600`} />;
+      default: return <FileText className={`${className} text-gray-500`} />;
+    }
+  };
+
+  const templates = {
+    word: [
+      { id: 't1', title: 'Resume Builder', desc: 'Sleek corporate profile' },
+      { id: 't2', title: 'Meeting Summary', desc: 'Standard business structure' },
+      { id: 't3', title: 'Creative Story Pitch', desc: 'Narrative overview template' }
+    ],
+    excel: [
+      { id: 't4', title: 'Monthly Household Budget', desc: 'Income, savings, and expense planner' },
+      { id: 't5', title: 'Project Tracker Grid', desc: 'Milestones & tasks with completion column' },
+    ],
+    powerpoint: [
+      { id: 't6', title: 'Modern Pitch Deck', desc: 'For startups looking to raise capital' },
+      { id: 't7', title: 'Technical Review Slides', desc: 'Detailed architectural walkthrough slides' },
+    ]
+  };
+
+  const handleCreateFromTemplate = (type, template) => {
+    createDocument(type);
+    // Custom loading state to populate the doc content according to template...
+  };
+
+  return (
+    <div className="flex-1 flex flex-col">
+      {/* Top Microsoft Hub header */}
+      <header className="bg-white border-b border-slate-200 px-4 py-4 md:px-8 sticky top-0 z-30 shadow-xs">
+        <div className="max-w-6xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-gradient-to-tr from-amber-500 via-rose-500 to-indigo-600 rounded-xl flex items-center justify-center text-white shadow-md">
+              <Sparkles className="w-5 h-5 animate-pulse" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-slate-900 to-slate-700 bg-clip-text text-transparent">Office Hub AI</h1>
+              <p className="text-xs text-slate-500 font-medium">Power suite with built-in Copilot</p>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-full text-xs font-semibold text-indigo-700 shadow-xs">
+              <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
+              <span>Gemini 2.5 Active</span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content Area */}
+      <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-6 md:px-8 flex flex-col gap-6">
+        
+        {/* Navigation Tabs */}
+        <div className="flex border-b border-slate-200">
+          <button 
+            onClick={() => setActiveTab('home')}
+            className={`px-5 py-3 text-sm font-semibold border-b-2 transition-all ${activeTab === 'home' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+          >
+            Recent Documents
+          </button>
+          <button 
+            onClick={() => setActiveTab('templates')}
+            className={`px-5 py-3 text-sm font-semibold border-b-2 transition-all ${activeTab === 'templates' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+          >
+            Templates Gallery
+          </button>
+        </div>
+
+        {activeTab === 'home' && (
+          <>
+            {/* Quick Create Buttons Block */}
+            <div className="grid grid-cols-3 gap-3 md:gap-4">
+              <button 
+                onClick={() => createDocument('word')}
+                className="group flex flex-col items-center justify-center p-4 md:p-6 bg-white border border-slate-200 rounded-2xl hover:shadow-md hover:border-blue-300 transition-all text-center"
+              >
+                <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center mb-3 group-hover:scale-105 transition-all">
+                  <FileText className="w-6 h-6" />
+                </div>
+                <span className="font-bold text-xs md:text-sm text-slate-800">Word Document</span>
+                <span className="text-[10px] text-slate-400 mt-1">AI Essayist</span>
+              </button>
+
+              <button 
+                onClick={() => createDocument('excel')}
+                className="group flex flex-col items-center justify-center p-4 md:p-6 bg-white border border-slate-200 rounded-2xl hover:shadow-md hover:border-emerald-300 transition-all text-center"
+              >
+                <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center mb-3 group-hover:scale-105 transition-all">
+                  <FileSpreadsheet className="w-6 h-6" />
+                </div>
+                <span className="font-bold text-xs md:text-sm text-slate-800">Excel Sheet</span>
+                <span className="text-[10px] text-slate-400 mt-1">Formula & Charts</span>
+              </button>
+
+              <button 
+                onClick={() => createDocument('powerpoint')}
+                className="group flex flex-col items-center justify-center p-4 md:p-6 bg-white border border-slate-200 rounded-2xl hover:shadow-md hover:border-orange-300 transition-all text-center"
+              >
+                <div className="w-12 h-12 bg-orange-50 text-orange-600 rounded-xl flex items-center justify-center mb-3 group-hover:scale-105 transition-all">
+                  <Presentation className="w-6 h-6" />
+                </div>
+                <span className="font-bold text-xs md:text-sm text-slate-800">PowerPoint slide</span>
+                <span className="text-[10px] text-slate-400 mt-1">Presentation</span>
+              </button>
+            </div>
+
+            {/* Filter and Search Bar */}
+            <div className="flex flex-col md:flex-row gap-3 items-center justify-between mt-4">
+              <div className="relative w-full md:w-80">
+                <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                <input 
+                  type="text" 
+                  placeholder="Search files..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 overflow-x-auto w-full md:w-auto pb-1 md:pb-0">
+                <button 
+                  onClick={() => setFilterType('all')} 
+                  className={`px-3 py-1.5 text-xs rounded-lg font-semibold whitespace-nowrap ${filterType === 'all' ? 'bg-slate-800 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}
+                >
+                  All files
+                </button>
+                <button 
+                  onClick={() => setFilterType('word')} 
+                  className={`px-3 py-1.5 text-xs rounded-lg font-semibold flex items-center gap-1.5 whitespace-nowrap ${filterType === 'word' ? 'bg-blue-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}
+                >
+                  <FileText className="w-3.5 h-3.5" /> Word
+                </button>
+                <button 
+                  onClick={() => setFilterType('excel')} 
+                  className={`px-3 py-1.5 text-xs rounded-lg font-semibold flex items-center gap-1.5 whitespace-nowrap ${filterType === 'excel' ? 'bg-emerald-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" /> Excel
+                </button>
+                <button 
+                  onClick={() => setFilterType('powerpoint')} 
+                  className={`px-3 py-1.5 text-xs rounded-lg font-semibold flex items-center gap-1.5 whitespace-nowrap ${filterType === 'powerpoint' ? 'bg-orange-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}
+                >
+                  <Presentation className="w-3.5 h-3.5" /> Slides
+                </button>
+              </div>
+            </div>
+
+            {/* Document Listing */}
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
+              <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider flex justify-between">
+                <span>Recent Files</span>
+                <span>Actions</span>
+              </div>
+
+              {filteredDocs.length === 0 ? (
+                <div className="p-12 text-center text-slate-500 flex flex-col items-center justify-center">
+                  <FolderOpen className="w-12 h-12 text-slate-300 mb-3" />
+                  <p className="text-sm font-semibold">No documents found</p>
+                  <p className="text-xs text-slate-400 mt-1">Create one above to get started!</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {filteredDocs.map((doc) => (
+                    <div 
+                      key={doc.id}
+                      onClick={() => openDocument(doc.id)}
+                      className="p-4 hover:bg-slate-50 transition-colors flex items-center justify-between cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        <div className="p-2 bg-slate-50 rounded-xl group-hover:scale-105 transition-all">
+                          {getDocIcon(doc.type)}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          {editingTitleId === doc.id ? (
+                            <input 
+                              type="text"
+                              value={tempTitle}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => setTempTitle(e.target.value)}
+                              onBlur={() => {
+                                renameDocument(doc.id, tempTitle);
+                                setEditingTitleId(null);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  renameDocument(doc.id, tempTitle);
+                                  setEditingTitleId(null);
+                                }
+                              }}
+                              className="text-sm font-semibold text-slate-800 border border-indigo-300 rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-white"
+                              autoFocus
+                            />
+                          ) : (
+                            <h3 className="text-sm font-semibold text-slate-800 truncate flex items-center gap-2">
+                              {doc.title}
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingTitleId(doc.id);
+                                  setTempTitle(doc.title);
+                                }}
+                                className="text-slate-400 hover:text-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity text-xs underline font-normal"
+                              >
+                                Rename
+                              </button>
+                            </h3>
+                          )}
+                          <div className="flex items-center gap-1.5 text-xs text-slate-400 mt-0.5">
+                            <Clock className="w-3 h-3" />
+                            <span>Edited {doc.updatedAt}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs px-2 py-1 bg-slate-100 rounded-md font-semibold text-slate-500 capitalize mr-2">
+                          {doc.type}
+                        </span>
+                        <button 
+                          onClick={(e) => deleteDocument(doc.id, e)}
+                          className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {activeTab === 'templates' && (
+          <div className="flex flex-col gap-6">
+            <div>
+              <h2 className="text-md font-bold text-slate-800 mb-3 flex items-center gap-2">
+                <FileText className="w-5 h-5 text-blue-600" /> Professional Word Templates
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {templates.word.map(t => (
+                  <div key={t.id} className="border border-slate-200 bg-white p-4 rounded-xl flex flex-col justify-between hover:shadow-md transition-shadow">
+                    <div>
+                      <h3 className="font-bold text-sm text-slate-800">{t.title}</h3>
+                      <p className="text-xs text-slate-500 mt-1">{t.desc}</p>
+                    </div>
+                    <button 
+                      onClick={() => handleCreateFromTemplate('word', t)}
+                      className="mt-3 w-full bg-blue-50 text-blue-600 py-2 text-xs font-semibold rounded-lg hover:bg-blue-100 transition-colors"
+                    >
+                      Use Template
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <h2 className="text-md font-bold text-slate-800 mb-3 flex items-center gap-2">
+                <FileSpreadsheet className="w-5 h-5 text-emerald-600" /> High-Performance Excel Budgets
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {templates.excel.map(t => (
+                  <div key={t.id} className="border border-slate-200 bg-white p-4 rounded-xl flex flex-col justify-between hover:shadow-md transition-shadow">
+                    <div>
+                      <h3 className="font-bold text-sm text-slate-800">{t.title}</h3>
+                      <p className="text-xs text-slate-500 mt-1">{t.desc}</p>
+                    </div>
+                    <button 
+                      onClick={() => handleCreateFromTemplate('excel', t)}
+                      className="mt-3 w-full bg-emerald-50 text-emerald-600 py-2 text-xs font-semibold rounded-lg hover:bg-emerald-100 transition-colors"
+                    >
+                      Use Template
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <h2 className="text-md font-bold text-slate-800 mb-3 flex items-center gap-2">
+                <Presentation className="w-5 h-5 text-orange-600" /> Beautiful Slide Presentations
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {templates.powerpoint.map(t => (
+                  <div key={t.id} className="border border-slate-200 bg-white p-4 rounded-xl flex flex-col justify-between hover:shadow-md transition-shadow">
+                    <div>
+                      <h3 className="font-bold text-sm text-slate-800">{t.title}</h3>
+                      <p className="text-xs text-slate-500 mt-1">{t.desc}</p>
+                    </div>
+                    <button 
+                      onClick={() => handleCreateFromTemplate('powerpoint', t)}
+                      className="mt-3 w-full bg-orange-50 text-orange-600 py-2 text-xs font-semibold rounded-lg hover:bg-orange-100 transition-colors"
+                    >
+                      Use Template
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+      </main>
+
+      {/* Floating Copilot Button */}
+      <div className="fixed bottom-6 right-6 z-40">
+        <button 
+          onClick={() => {
+            createDocument('word');
+            setTimeout(() => {
+              setIsCopilotOpen(true);
+            }, 300);
+          }}
+          className="flex items-center gap-2 bg-gradient-to-r from-violet-600 to-indigo-600 text-white font-bold py-3 px-5 rounded-full shadow-lg shadow-indigo-200 hover:scale-105 active:scale-95 transition-all text-sm"
+        >
+          <Sparkles className="w-5 h-5 animate-pulse" />
+          <span>Ask Copilot</span>
+        </button>
+      </div>
+
+      <footer className="bg-slate-100 border-t border-slate-200 py-6 text-center text-xs text-slate-500 mt-auto">
+        <p>© 2026 Office Hub AI Suite. Enhanced with Gemini Pro AI.</p>
+      </footer>
+    </div>
+  );
+}
+
+// ==========================================
+// 2. WORD DOCUMENT EDITOR
+// ==========================================
+function WordEditor({ 
+  doc, 
+  onBack, 
+  onUpdate, 
+  onRename,
+  isCopilotOpen,
+  setIsCopilotOpen,
+  aiPrompt,
+  setAiPrompt,
+  aiLoading,
+  setAiLoading,
+  triggerNotification
+}) {
+  const editorRef = useRef(null);
+
+  // Sync content with ref
+  useEffect(() => {
+    if (editorRef.current && editorRef.current.innerHTML !== doc.content) {
+      editorRef.current.innerHTML = doc.content;
+    }
+  }, [doc.id]);
+
+  const handleTextFormat = (command, value = null) => {
+    document.execCommand(command, false, value);
+    if (editorRef.current) {
+      onUpdate(editorRef.current.innerHTML);
+    }
+  };
+
+  const handleContentInput = () => {
+    if (editorRef.current) {
+      onUpdate(editorRef.current.innerHTML);
+    }
+  };
+
+  const executeCopilotDraft = async () => {
+    if (!aiPrompt.trim()) return;
+    setAiLoading(true);
+    try {
+      const result = await callGemini(
+        `Draft professional document body text or outline regarding: "${aiPrompt}". Keep it comprehensive and format using clean, simple HTML paragraphs or heading structures.`,
+        "You are an expert AI Office assistant helping draft professional Word document contents."
+      );
+      if (editorRef.current) {
+        const addedHtml = `<div class="ai-generated-block border-l-4 border-indigo-400 pl-3 my-4">${result}</div>`;
+        editorRef.current.innerHTML += addedHtml;
+        onUpdate(editorRef.current.innerHTML);
+        triggerNotification("AI Copilot drafted content!");
+        setAiPrompt('');
+      }
+    } catch (err) {
+      console.error(err);
+      triggerNotification("Failed to fetch AI draft", "error");
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleExportText = () => {
+    if (editorRef.current) {
+      const text = editorRef.current.innerText;
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${doc.title}.txt`;
+      link.click();
+      triggerNotification("Downloaded TXT copy");
+    }
+  };
+
+  return (
+    <div className="flex-1 flex flex-col md:flex-row h-screen overflow-hidden">
+      {/* Editor Space */}
+      <div className="flex-1 flex flex-col min-w-0 bg-slate-50 overflow-y-auto">
+        {/* Editor Top Control Bar */}
+        <div className="bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between sticky top-0 z-20">
+          <div className="flex items-center gap-3 min-w-0">
+            <button onClick={onBack} className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-500">
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+            <div className="p-1.5 bg-blue-100 text-blue-600 rounded-lg">
+              <FileText className="w-5 h-5" />
+            </div>
+            <input 
+              type="text" 
+              value={doc.title}
+              onChange={(e) => onRename(e.target.value)}
+              className="font-semibold text-slate-800 text-sm md:text-base focus:outline-none focus:border-indigo-500 border border-transparent rounded px-1 w-40 md:w-64"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={() => setIsCopilotOpen(!isCopilotOpen)}
+              className="flex items-center gap-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Copilot</span>
+            </button>
+
+            <button 
+              onClick={handleExportText}
+              title="Download as Plain Text"
+              className="p-1.5 text-slate-500 hover:bg-slate-100 rounded-lg transition-colors"
+            >
+              <FileDown className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Text Styling Toolbar */}
+        <div className="bg-slate-100 border-b border-slate-200 px-4 py-2 flex items-center gap-1 md:gap-2 flex-wrap">
+          <button onClick={() => handleTextFormat('bold')} className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-700" title="Bold"><Bold className="w-4 h-4" /></button>
+          <button onClick={() => handleTextFormat('italic')} className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-700" title="Italic"><Italic className="w-4 h-4" /></button>
+          <button onClick={() => handleTextFormat('underline')} className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-700" title="Underline"><Underline className="w-4 h-4" /></button>
+          <div className="w-px h-5 bg-slate-300 mx-1"></div>
+          <button onClick={() => handleTextFormat('justifyLeft')} className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-700" title="Align Left"><AlignLeft className="w-4 h-4" /></button>
+          <button onClick={() => handleTextFormat('justifyCenter')} className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-700" title="Align Center"><AlignCenter className="w-4 h-4" /></button>
+          <button onClick={() => handleTextFormat('justifyRight')} className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-700" title="Align Right"><AlignRight className="w-4 h-4" /></button>
+          <div className="w-px h-5 bg-slate-300 mx-1"></div>
+          <button onClick={() => handleTextFormat('insertUnorderedList')} className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-700 text-xs font-bold" title="Bullet List">• List</button>
+          <button onClick={() => handleTextFormat('insertOrderedList')} className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-700 text-xs font-bold" title="Number List">1. List</button>
+          <div className="w-px h-5 bg-slate-300 mx-1"></div>
+          <button onClick={() => handleTextFormat('fontSize', '5')} className="p-1.5 hover:bg-slate-200 text-xs rounded-lg text-slate-700 font-bold">H1</button>
+          <button onClick={() => handleTextFormat('fontSize', '4')} className="p-1.5 hover:bg-slate-200 text-xs rounded-lg text-slate-700 font-bold">H2</button>
+          <button onClick={() => handleTextFormat('fontSize', '3')} className="p-1.5 hover:bg-slate-200 text-xs rounded-lg text-slate-700 font-normal">Normal</button>
+        </div>
+
+        {/* Printable/A4-style Page Editor */}
+        <div className="flex-1 p-4 md:p-8 flex justify-center bg-slate-50 overflow-y-auto">
+          <div className="w-full max-w-3xl bg-white min-h-[842px] p-8 md:p-12 shadow-md border border-slate-200 rounded-2xl flex flex-col focus-within:ring-2 focus-within:ring-indigo-500">
+            <div 
+              ref={editorRef}
+              contentEditable
+              onInput={handleContentInput}
+              className="flex-1 focus:outline-none prose prose-slate max-w-none text-slate-800"
+              style={{ minHeight: '600px' }}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* AI Copilot Side Panel */}
+      {isCopilotOpen && (
+        <div className="w-full md:w-80 border-t md:border-t-0 md:border-l border-slate-200 bg-white flex flex-col h-[350px] md:h-full shrink-0">
+          <div className="px-4 py-3 bg-indigo-50 border-b border-indigo-100 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-indigo-800">
+              <Sparkles className="w-4 h-4 animate-spin text-indigo-600" />
+              <span className="font-bold text-sm">Gemini AI Copilot</span>
+            </div>
+            <button 
+              onClick={() => setIsCopilotOpen(false)}
+              className="p-1 hover:bg-indigo-100 rounded text-indigo-600"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs text-slate-600">
+              💡 Draft anything with Gemini! Try: <br />
+              <span className="italic">"Write an essay about artificial intelligence trends in office productivity tools."</span>
+            </div>
+
+            <textarea 
+              rows={4}
+              placeholder="Tell Copilot what to write or edit..."
+              value={aiPrompt}
+              onChange={(e) => setAiPrompt(e.target.value)}
+              className="w-full border border-slate-200 rounded-xl p-3 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none bg-slate-50"
+            />
+
+            <button 
+              onClick={executeCopilotDraft}
+              disabled={aiLoading}
+              className="w-full bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold py-2.5 rounded-xl hover:opacity-90 active:scale-98 transition-all text-xs flex items-center justify-center gap-2"
+            >
+              {aiLoading ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Drafting with Gemini...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  <span>Generate & Insert</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==========================================
+// 3. EXCEL SPREADSHEET EDITOR
+// ==========================================
+function ExcelEditor({ 
+  doc, 
+  onBack, 
+  onUpdate, 
+  onRename,
+  isCopilotOpen,
+  setIsCopilotOpen,
+  aiPrompt,
+  setAiPrompt,
+  aiLoading,
+  setAiLoading,
+  triggerNotification
+}) {
+  const [activeCell, setActiveCell] = useState({ r: 0, c: 0 });
+  const [formulaInput, setFormulaInput] = useState('');
+
+  // Handle excel grid values
+  const grid = doc.content.grid;
+  const cellStyles = doc.content.styles || {};
+
+  // Simple Formula Evaluator
+  const evaluateGridValue = (val, currentGrid) => {
+    if (!val || typeof val !== 'string' || !val.startsWith('=')) {
+      return val;
+    }
+
+    try {
+      const formula = val.slice(1).toUpperCase(); // e.g. SUM(B2:D2)
+      const sumMatch = formula.match(/^SUM\(([A-Z])([0-9]+):([A-Z])([0-9]+)\)$/);
+      const avgMatch = formula.match(/^AVERAGE\(([A-Z])([0-9]+):([A-Z])([0-9]+)\)$/);
+
+      const cellToIndex = (colLetter, rowStr) => {
+        const c = colLetter.charCodeAt(0) - 65; // A=0, B=1
+        const r = parseInt(rowStr) - 1; // 1-based to 0-based index
+        return { r, c };
+      };
+
+      if (sumMatch) {
+        const start = cellToIndex(sumMatch[1], sumMatch[2]);
+        const end = cellToIndex(sumMatch[3], sumMatch[4]);
+        let total = 0;
+        for (let r = start.r; r <= end.r; r++) {
+          for (let c = start.c; c <= end.c; c++) {
+            const cellVal = parseFloat(currentGrid[r]?.[c] || 0);
+            if (!isNaN(cellVal)) total += cellVal;
+          }
+        }
+        return total;
+      }
+
+      if (avgMatch) {
+        const start = cellToIndex(avgMatch[1], avgMatch[2]);
+        const end = cellToIndex(avgMatch[3], avgMatch[4]);
+        let total = 0;
+        let count = 0;
+        for (let r = start.r; r <= end.r; r++) {
+          for (let c = start.c; c <= end.c; c++) {
+            const cellVal = parseFloat(currentGrid[r]?.[c] || 0);
+            if (!isNaN(cellVal)) {
+              total += cellVal;
+              count++;
+            }
+          }
+        }
+        return count > 0 ? (total / count).toFixed(2) : 0;
+      }
+
+      // Basic simple evaluation fallback
+      return "Calc Error";
+    } catch (e) {
+      return "Formula Error";
+    }
+  };
+
+  const updateCell = (r, c, value) => {
+    const updatedGrid = [...grid];
+    updatedGrid[r][c] = value;
+    onUpdate({
+      ...doc.content,
+      grid: updatedGrid
+    });
+  };
+
+  const handleCellSelect = (r, c) => {
+    setActiveCell({ r, c });
+    setFormulaInput(grid[r]?.[c] || '');
+  };
+
+  const applyFormulaToActive = () => {
+    updateCell(activeCell.r, activeCell.c, formulaInput);
+  };
+
+  const getColLetter = (index) => String.fromCharCode(65 + index);
+
+  const applyFormatting = (styleName, val) => {
+    const coord = `${getColLetter(activeCell.c)}${activeCell.r + 1}`;
+    const newStyles = { ...cellStyles };
+    if (!newStyles[coord]) newStyles[coord] = {};
+    newStyles[coord][styleName] = val;
+    onUpdate({
+      ...doc.content,
+      styles: newStyles
+    });
+  };
+
+  const executeCopilotGrid = async () => {
+    if (!aiPrompt.trim()) return;
+    setAiLoading(true);
+    try {
+      const result = await callGemini(
+        `Draft dynamic spreadsheet table contents regarding: "${aiPrompt}". Return raw CSV styled format starting with Column headers on the first line and exactly 6-10 subsequent rows. Example:
+Product,Price,Quantity
+Apples,1.2,5
+Oranges,1.5,10`,
+        "You are an expert AI Spreadsheet architect."
+      );
+      
+      const rows = result.split('\n').filter(r => r.trim());
+      const tempGrid = [...grid];
+
+      rows.forEach((row, rIdx) => {
+        if (rIdx < tempGrid.length) {
+          const cells = row.split(',').map(c => c.trim().replace(/['"]+/g, ''));
+          cells.forEach((cVal, cIdx) => {
+            if (cIdx < tempGrid[0].length) {
+              tempGrid[rIdx][cIdx] = cVal;
+            }
+          });
+        }
+      });
+
+      onUpdate({
+        ...doc.content,
+        grid: tempGrid
+      });
+      triggerNotification("AI Spreadsheet Table Created!");
+      setAiPrompt('');
+    } catch (err) {
+      console.error(err);
+      triggerNotification("Failed to generate table with Gemini", "error");
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleDownloadCSV = () => {
+    const csvContent = grid.map(r => r.join(',')).join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${doc.title}.csv`;
+    link.click();
+    triggerNotification("Downloaded CSV Copy");
+  };
+
+  return (
+    <div className="flex-1 flex flex-col md:flex-row h-screen overflow-hidden">
+      {/* Excel Sheet Space */}
+      <div className="flex-1 flex flex-col min-w-0 bg-slate-50 overflow-y-auto">
+        
+        {/* Editor Top Control Bar */}
+        <div className="bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between sticky top-0 z-20">
+          <div className="flex items-center gap-3 min-w-0">
+            <button onClick={onBack} className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-500">
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+            <div className="p-1.5 bg-emerald-100 text-emerald-600 rounded-lg">
+              <FileSpreadsheet className="w-5 h-5" />
+            </div>
+            <input 
+              type="text" 
+              value={doc.title}
+              onChange={(e) => onRename(e.target.value)}
+              className="font-semibold text-slate-800 text-sm md:text-base focus:outline-none focus:border-indigo-500 border border-transparent rounded px-1 w-40 md:w-64"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={() => setIsCopilotOpen(!isCopilotOpen)}
+              className="flex items-center gap-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Copilot</span>
+            </button>
+
+            <button 
+              onClick={handleDownloadCSV}
+              title="Download as CSV"
+              className="p-1.5 text-slate-500 hover:bg-slate-100 rounded-lg transition-colors"
+            >
+              <FileDown className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Formula Bar */}
+        <div className="bg-slate-100 border-b border-slate-200 px-4 py-2 flex items-center gap-2">
+          <div className="flex items-center gap-1.5 bg-white border border-slate-200 px-2 py-1 rounded-lg text-xs text-slate-500 font-bold uppercase select-none shadow-xs">
+            <span>Cell {getColLetter(activeCell.c)}{activeCell.r + 1}</span>
+          </div>
+          <span className="text-xs font-bold text-slate-500">fx</span>
+          <div className="flex-1 flex gap-2">
+            <input 
+              type="text"
+              placeholder="e.g. =SUM(B2:D2) or simple value"
+              value={formulaInput}
+              onChange={(e) => setFormulaInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') applyFormulaToActive();
+              }}
+              className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono"
+            />
+            <button 
+              onClick={applyFormulaToActive}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs px-3 py-1 rounded-lg transition-colors"
+            >
+              Enter
+            </button>
+          </div>
+        </div>
+
+        {/* Excel Formatting Bar */}
+        <div className="bg-slate-50 border-b border-slate-200 px-4 py-2 flex items-center gap-2 flex-wrap">
+          <button 
+            onClick={() => applyFormatting('bold', true)}
+            className="p-1 hover:bg-slate-200 rounded text-slate-700 text-xs font-bold flex items-center gap-1"
+          >
+            <Bold className="w-3.5 h-3.5" /> Bold
+          </button>
+          <div className="w-px h-4 bg-slate-300"></div>
+          <button 
+            onClick={() => applyFormatting('bg', 'bg-yellow-100')}
+            className="p-1 hover:bg-slate-200 rounded text-xs text-yellow-800 flex items-center gap-1 font-semibold"
+          >
+            🎨 Yellow Bg
+          </button>
+          <button 
+            onClick={() => applyFormatting('bg', 'bg-emerald-100')}
+            className="p-1 hover:bg-slate-200 rounded text-xs text-emerald-800 flex items-center gap-1 font-semibold"
+          >
+            🎨 Green Bg
+          </button>
+          <button 
+            onClick={() => applyFormatting('bg', '')}
+            className="p-1 hover:bg-slate-200 rounded text-xs text-slate-500 flex items-center gap-1 font-semibold"
+          >
+            Reset Style
+          </button>
+        </div>
+
+        {/* Spreadsheet Cells Grid */}
+        <div className="flex-1 overflow-auto p-4 bg-slate-100">
+          <div className="inline-block bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+            <table className="border-collapse text-left text-xs text-slate-600">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200">
+                  <th className="px-3 py-2 border-r border-slate-200 text-center select-none bg-slate-100 font-bold w-12 text-[10px] text-slate-400">#</th>
+                  {grid[0]?.map((_, colIdx) => (
+                    <th 
+                      key={colIdx} 
+                      className="px-4 py-2 border-r border-slate-200 text-center select-none font-bold bg-slate-100 text-slate-500"
+                      style={{ minWidth: '110px' }}
+                    >
+                      {getColLetter(colIdx)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {grid.map((row, rIdx) => (
+                  <tr key={rIdx} className="border-b border-slate-100 hover:bg-slate-50/50">
+                    <td className="px-3 py-1.5 border-r border-slate-200 text-center select-none bg-slate-50 font-semibold text-slate-400 text-[10px]">
+                      {rIdx + 1}
+                    </td>
+                    {row.map((cellVal, cIdx) => {
+                      const coord = `${getColLetter(cIdx)}${rIdx + 1}`;
+                      const style = cellStyles[coord] || {};
+                      const isSelected = activeCell.r === rIdx && activeCell.c === cIdx;
+
+                      // Evaluate formulas in cells (display evaluation, keep raw in memory)
+                      const evaluated = evaluateGridValue(cellVal, grid);
+
+                      return (
+                        <td 
+                          key={cIdx}
+                          onClick={() => handleCellSelect(rIdx, cIdx)}
+                          className={`border-r border-slate-200 relative p-0 group cursor-pointer transition-colors ${style.bg || ''} ${isSelected ? 'ring-2 ring-emerald-500 ring-inset bg-emerald-50/25 z-10' : ''}`}
+                        >
+                          <input 
+                            type="text" 
+                            value={isSelected ? formulaInput : (evaluated || '')}
+                            onChange={(e) => {
+                              if (isSelected) {
+                                setFormulaInput(e.target.value);
+                              } else {
+                                updateCell(rIdx, cIdx, e.target.value);
+                              }
+                            }}
+                            onBlur={() => {
+                              if (isSelected) applyFormulaToActive();
+                            }}
+                            className={`w-full h-full px-3 py-2 bg-transparent focus:outline-none font-mono ${style.bold ? 'font-bold' : ''} ${style.color || 'text-slate-800'}`}
+                          />
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      {/* AI Copilot Side Panel */}
+      {isCopilotOpen && (
+        <div className="w-full md:w-80 border-t md:border-t-0 md:border-l border-slate-200 bg-white flex flex-col h-[350px] md:h-full shrink-0">
+          <div className="px-4 py-3 bg-emerald-50 border-b border-emerald-100 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-emerald-800">
+              <Sparkles className="w-4 h-4 animate-spin text-emerald-600" />
+              <span className="font-bold text-sm">Excel Copilot</span>
+            </div>
+            <button 
+              onClick={() => setIsCopilotOpen(false)}
+              className="p-1 hover:bg-emerald-100 rounded text-emerald-600"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs text-slate-600">
+              💡 Draft rich spreadsheet models with Gemini! Try: <br />
+              <span className="italic">"Generate an inventory spreadsheet of technology hardware products with categories, quantities, pricing."</span>
+            </div>
+
+            <textarea 
+              rows={4}
+              placeholder="Draft table prompt..."
+              value={aiPrompt}
+              onChange={(e) => setAiPrompt(e.target.value)}
+              className="w-full border border-slate-200 rounded-xl p-3 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none bg-slate-50"
+            />
+
+            <button 
+              onClick={executeCopilotGrid}
+              disabled={aiLoading}
+              className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 text-white font-semibold py-2.5 rounded-xl hover:opacity-90 active:scale-98 transition-all text-xs flex items-center justify-center gap-2"
+            >
+              {aiLoading ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Drafting Table...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  <span>Generate Spreadsheet</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==========================================
+// 4. POWERPOINT SLIDES EDITOR
+// ==========================================
+function PowerPointEditor({ 
+  doc, 
+  onBack, 
+  onUpdate, 
+  onRename,
+  isCopilotOpen,
+  setIsCopilotOpen,
+  aiPrompt,
+  setAiPrompt,
+  aiLoading,
+  setAiLoading,
+  triggerNotification,
+  onPresent
+}) {
+  const [activeSlideIndex, setActiveSlideIndex] = useState(0);
+
+  const slides = doc.content.slides || [];
+
+  const handleUpdateSlideField = (field, value) => {
+    const updatedSlides = [...slides];
+    updatedSlides[activeSlideIndex] = {
+      ...updatedSlides[activeSlideIndex],
+      [field]: value
+    };
+    onUpdate({
+      ...doc.content,
+      slides: updatedSlides
+    });
+  };
+
+  const handleUpdateBulletPoint = (bIdx, value) => {
+    const updatedSlides = [...slides];
+    const updatedBullets = [...updatedSlides[activeSlideIndex].bullets];
+    updatedBullets[bIdx] = value;
+    updatedSlides[activeSlideIndex] = {
+      ...updatedSlides[activeSlideIndex],
+      bullets: updatedBullets
+    };
+    onUpdate({
+      ...doc.content,
+      slides: updatedSlides
+    });
+  };
+
+  const handleAddBulletPoint = () => {
+    const updatedSlides = [...slides];
+    const updatedBullets = [...(updatedSlides[activeSlideIndex].bullets || []), "New slide bullet item"];
+    updatedSlides[activeSlideIndex] = {
+      ...updatedSlides[activeSlideIndex],
+      bullets: updatedBullets
+    };
+    onUpdate({
+      ...doc.content,
+      slides: updatedSlides
+    });
+  };
+
+  const handleRemoveBulletPoint = (bIdx) => {
+    const updatedSlides = [...slides];
+    const updatedBullets = (updatedSlides[activeSlideIndex].bullets || []).filter((_, idx) => idx !== bIdx);
+    updatedSlides[activeSlideIndex] = {
+      ...updatedSlides[activeSlideIndex],
+      bullets: updatedBullets
+    };
+    onUpdate({
+      ...doc.content,
+      slides: updatedSlides
+    });
+  };
+
+  const handleAddNewSlide = () => {
+    const newSlide = {
+      id: `s-${Date.now()}`,
+      title: 'New Slide Title',
+      subtitle: 'New slide subtitle description details',
+      bullets: ['Highlight bullet point number one'],
+      bgClass: 'from-blue-600 to-indigo-800'
+    };
+    onUpdate({
+      ...doc.content,
+      slides: [...slides, newSlide]
+    });
+    setActiveSlideIndex(slides.length);
+    triggerNotification("Added new slide");
+  };
+
+  const handleDeleteSlide = (idx, e) => {
+    if (e) e.stopPropagation();
+    if (slides.length <= 1) {
+      triggerNotification("You need to keep at least 1 slide!", "warning");
+      return;
+    }
+    const updated = slides.filter((_, sIdx) => sIdx !== idx);
+    onUpdate({
+      ...doc.content,
+      slides: updated
+    });
+    setActiveSlideIndex(Math.max(0, idx - 1));
+    triggerNotification("Slide removed");
+  };
+
+  const changeSlideBg = (bgClass) => {
+    handleUpdateSlideField('bgClass', bgClass);
+  };
+
+  const executeCopilotPowerpoint = async () => {
+    if (!aiPrompt.trim()) return;
+    setAiLoading(true);
+    try {
+      const systemPrompt = "You are an expert Presentation designer. Output response as a valid JSON with schema structure: { \"slides\": [ { \"title\": \"...\", \"subtitle\": \"...\", \"bullets\": [\"...\", \"...\"], \"bgClass\": \"from-slate-800 to-slate-900\" } ] }";
+      
+      const responseText = await callGemini(
+        `Generate 3 coherent PowerPoint slides outline on the topic: "${aiPrompt}". Choose color scheme bgClass from standard Tailwind configurations (e.g. from-indigo-700 to-purple-800, from-rose-600 to-orange-500, from-teal-600 to-emerald-700). Respond ONLY with valid raw JSON.`,
+        systemPrompt,
+        true // JSON parsing mode
+      );
+
+      const parsed = JSON.parse(responseText);
+      if (parsed && Array.isArray(parsed.slides)) {
+        onUpdate({
+          ...doc.content,
+          slides: [...slides, ...parsed.slides]
+        });
+        setActiveSlideIndex(slides.length);
+        triggerNotification("PowerPoint Slides Drafted with AI!");
+        setAiPrompt('');
+      } else {
+        throw new Error("Invalid structure returned");
+      }
+    } catch (err) {
+      console.error(err);
+      triggerNotification("Could not parse AI PowerPoint output", "error");
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const activeSlide = slides[activeSlideIndex] || slides[0];
+
+  return (
+    <div className="flex-1 flex flex-col md:flex-row h-screen overflow-hidden">
+      {/* PPT Sidebar & Slide Sorter */}
+      <div className="w-full md:w-60 border-b md:border-b-0 md:border-r border-slate-200 bg-white flex flex-col shrink-0">
+        <div className="p-4 border-b border-slate-200 flex items-center justify-between">
+          <span className="font-bold text-xs text-slate-500 uppercase tracking-wider">Slide Sorter</span>
+          <button 
+            onClick={handleAddNewSlide}
+            className="p-1 hover:bg-slate-100 rounded-lg text-orange-600 flex items-center gap-1 text-xs font-semibold"
+          >
+            <PlusCircle className="w-4 h-4" /> Slide
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 flex md:flex-col gap-3">
+          {slides.map((s, idx) => (
+            <div 
+              key={s.id || idx}
+              onClick={() => setActiveSlideIndex(idx)}
+              className={`p-3 rounded-xl border text-left cursor-pointer transition-all shrink-0 w-36 md:w-full ${activeSlideIndex === idx ? 'border-orange-500 bg-orange-50/50 shadow-sm' : 'border-slate-200 bg-white hover:border-slate-300'}`}
+            >
+              <div className={`h-16 w-full rounded-md bg-gradient-to-tr ${s.bgClass || 'from-indigo-600 to-purple-800'} mb-2 p-1.5 overflow-hidden flex flex-col justify-between text-white`}>
+                <span className="text-[8px] font-bold truncate">{s.title}</span>
+                <span className="text-[6px] truncate opacity-80">{s.subtitle}</span>
+              </div>
+              <div className="flex items-center justify-between text-[10px] text-slate-500 font-bold">
+                <span>Slide {idx + 1}</span>
+                <button 
+                  onClick={(e) => handleDeleteSlide(idx, e)}
+                  className="p-1 hover:text-rose-600 hover:bg-rose-50 rounded"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Editor Main Space */}
+      <div className="flex-1 flex flex-col min-w-0 bg-slate-100 overflow-y-auto">
+        {/* Editor Top Control Bar */}
+        <div className="bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between sticky top-0 z-20">
+          <div className="flex items-center gap-3 min-w-0">
+            <button onClick={onBack} className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-500">
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+            <div className="p-1.5 bg-orange-100 text-orange-600 rounded-lg">
+              <Presentation className="w-5 h-5" />
+            </div>
+            <input 
+              type="text" 
+              value={doc.title}
+              onChange={(e) => onRename(e.target.value)}
+              className="font-semibold text-slate-800 text-sm md:text-base focus:outline-none focus:border-indigo-500 border border-transparent rounded px-1 w-40 md:w-64"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={onPresent}
+              className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-900 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shadow-xs"
+            >
+              <Play className="w-3.5 h-3.5 fill-current" />
+              <span>Present</span>
+            </button>
+
+            <button 
+              onClick={() => setIsCopilotOpen(!isCopilotOpen)}
+              className="flex items-center gap-1 bg-orange-50 hover:bg-orange-100 text-orange-700 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Copilot</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Dynamic Canvas Area */}
+        <div className="flex-1 p-6 md:p-12 flex flex-col items-center justify-center">
+          
+          {/* Theme background picker */}
+          <div className="bg-white border border-slate-200 px-4 py-2 rounded-2xl flex items-center gap-2 mb-4 shadow-xs">
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-wide mr-2">Slide Theme:</span>
+            <button onClick={() => changeSlideBg('from-rose-500 to-orange-500')} className="w-6 h-6 rounded-full bg-gradient-to-tr from-rose-500 to-orange-500 border border-white hover:scale-110 transition-transform shadow-xs" title="Warm Sunset"></button>
+            <button onClick={() => changeSlideBg('from-blue-600 to-indigo-800')} className="w-6 h-6 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-800 border border-white hover:scale-110 transition-transform shadow-xs" title="Corporate Indigo"></button>
+            <button onClick={() => changeSlideBg('from-emerald-500 to-teal-700')} className="w-6 h-6 rounded-full bg-gradient-to-tr from-emerald-500 to-teal-700 border border-white hover:scale-110 transition-transform shadow-xs" title="Oceanic Teal"></button>
+            <button onClick={() => changeSlideBg('from-slate-800 to-slate-950')} className="w-6 h-6 rounded-full bg-gradient-to-tr from-slate-800 to-slate-950 border border-white hover:scale-110 transition-transform shadow-xs" title="Sleek Obsidian"></button>
+          </div>
+
+          {activeSlide ? (
+            <div className={`w-full max-w-3xl aspect-[16/9] bg-gradient-to-tr ${activeSlide.bgClass || 'from-indigo-600 to-purple-800'} text-white p-8 md:p-12 rounded-2xl shadow-xl flex flex-col justify-between transition-all relative`}>
+              
+              <div>
+                <input 
+                  type="text"
+                  value={activeSlide.title || ''}
+                  onChange={(e) => handleUpdateSlideField('title', e.target.value)}
+                  className="bg-transparent text-2xl md:text-4xl font-extrabold focus:outline-none focus:border-white/40 border-b border-transparent w-full text-white placeholder-white/50 pb-1 mb-2"
+                  placeholder="Click to set slide title"
+                />
+                
+                <input 
+                  type="text"
+                  value={activeSlide.subtitle || ''}
+                  onChange={(e) => handleUpdateSlideField('subtitle', e.target.value)}
+                  className="bg-transparent text-sm md:text-base font-semibold text-orange-200 focus:outline-none focus:border-white/40 border-b border-transparent w-full placeholder-orange-200/50 pb-1 mb-6"
+                  placeholder="Click to set slide subtitle description"
+                />
+
+                <div className="flex flex-col gap-2 mt-4">
+                  {(activeSlide.bullets || []).map((bullet, bIdx) => (
+                    <div key={bIdx} className="flex items-center gap-2 group/bullet">
+                      <span className="text-orange-300">•</span>
+                      <input 
+                        type="text"
+                        value={bullet}
+                        onChange={(e) => handleUpdateBulletPoint(bIdx, e.target.value)}
+                        className="bg-transparent text-xs md:text-sm text-white/90 focus:outline-none border-b border-transparent focus:border-white/20 flex-1"
+                      />
+                      <button 
+                        onClick={() => handleRemoveBulletPoint(bIdx)}
+                        className="opacity-0 group-hover/bullet:opacity-100 p-1 text-white/50 hover:text-rose-400 transition-opacity"
+                      >
+                        <MinusCircle className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                  
+                  <button 
+                    onClick={handleAddBulletPoint}
+                    className="flex items-center gap-1.5 text-xs text-white/60 hover:text-white mt-2 font-semibold"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add bullet item
+                  </button>
+                </div>
+              </div>
+
+              <div className="text-[10px] text-white/40 font-bold tracking-widest flex justify-between uppercase">
+                <span>Office 365 Hub Presentations</span>
+                <span>Slide {activeSlideIndex + 1} of {slides.length}</span>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center text-slate-500">
+              <p className="text-sm font-semibold">No Slide Selected</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* AI Copilot Side Panel */}
+      {isCopilotOpen && (
+        <div className="w-full md:w-80 border-t md:border-t-0 md:border-l border-slate-200 bg-white flex flex-col h-[350px] md:h-full shrink-0">
+          <div className="px-4 py-3 bg-orange-50 border-b border-orange-100 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-orange-800">
+              <Sparkles className="w-4 h-4 animate-spin text-orange-600" />
+              <span className="font-bold text-sm">PowerPoint Copilot</span>
+            </div>
+            <button 
+              onClick={() => setIsCopilotOpen(false)}
+              className="p-1 hover:bg-orange-100 rounded text-orange-600"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs text-slate-600">
+              💡 Create fully structured slides in seconds with Gemini! Try: <br />
+              <span className="italic">"Outline slides for a pitch deck explaining our revolutionary electric car sharing startup model."</span>
+            </div>
+
+            <textarea 
+              rows={4}
+              placeholder="Tell PowerPoint what presentation slides to create..."
+              value={aiPrompt}
+              onChange={(e) => setAiPrompt(e.target.value)}
+              className="w-full border border-slate-200 rounded-xl p-3 text-xs focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none bg-slate-50"
+            />
+
+            <button 
+              onClick={executeCopilotPowerpoint}
+              disabled={aiLoading}
+              className="w-full bg-gradient-to-r from-orange-600 to-rose-600 text-white font-semibold py-2.5 rounded-xl hover:opacity-90 active:scale-98 transition-all text-xs flex items-center justify-center gap-2"
+            >
+              {aiLoading ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Drafting Slide Outline...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  <span>Generate Slides</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==========================================
+// 5. POWERPOINT PRESENTATION SLIDESHOW VIEWER
+// ==========================================
+function PresentationViewer({ doc, onClose }) {
+  const [slideIdx, setSlideIdx] = useState(0);
+  const slides = doc.content.slides || [];
+  const currentSlide = slides[slideIdx];
+
+  const handleNext = () => {
+    if (slideIdx < slides.length - 1) {
+      setSlideIdx(slideIdx + 1);
+    }
+  };
+
+  const handlePrev = () => {
+    if (slideIdx > 0) {
+      setSlideIdx(slideIdx - 1);
+    }
+  };
+
+  if (!currentSlide) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col justify-between text-white p-8 md:p-16 select-none animate-fade-in">
+      
+      {/* Top Header Controls */}
+      <div className="flex items-center justify-between border-b border-white/10 pb-4">
+        <div>
+          <h2 className="text-sm font-bold opacity-60 uppercase tracking-widest">{doc.title}</h2>
+          <span className="text-xs opacity-45">Slideshow Presentation Mode</span>
+        </div>
+        <button 
+          onClick={onClose}
+          className="bg-white/15 hover:bg-white/20 text-white font-semibold px-4 py-1.5 rounded-lg text-xs transition-colors"
+        >
+          Exit Slideshow
+        </button>
+      </div>
+
+      {/* Slide Body */}
+      <div className={`my-auto bg-gradient-to-tr ${currentSlide.bgClass || 'from-indigo-600 to-purple-800'} p-12 md:p-24 rounded-3xl shadow-2xl flex flex-col justify-between aspect-[16/9] max-w-5xl mx-auto w-full border border-white/5`}>
+        <div>
+          <h1 className="text-3xl md:text-5xl font-black mb-3">{currentSlide.title}</h1>
+          <p className="text-md md:text-xl text-orange-200 font-semibold mb-8">{currentSlide.subtitle}</p>
+
+          <div className="flex flex-col gap-3">
+            {(currentSlide.bullets || []).map((bullet, bIdx) => (
+              <div key={bIdx} className="flex items-start gap-3">
+                <span className="text-orange-300 text-lg">•</span>
+                <p className="text-sm md:text-lg text-white/90">{bullet}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="text-xs text-white/40 flex justify-between font-bold uppercase tracking-wider mt-12">
+          <span>{doc.title}</span>
+          <span>Slide {slideIdx + 1} of {slides.length}</span>
+        </div>
+      </div>
+
+      {/* Slide Navigation Controls */}
+      <div className="flex justify-between items-center max-w-xs mx-auto w-full pt-4 border-t border-white/10">
+        <button 
+          onClick={handlePrev}
+          disabled={slideIdx === 0}
+          className="p-3 bg-white/10 hover:bg-white/15 disabled:opacity-30 rounded-full text-white transition-opacity"
+        >
+          <ChevronLeft className="w-5 h-5" />
+        </button>
+
+        <span className="text-xs font-semibold opacity-70">
+          Slide {slideIdx + 1} / {slides.length}
+        </span>
+
+        <button 
+          onClick={handleNext}
+          disabled={slideIdx === slides.length - 1}
+          className="p-3 bg-white/10 hover:bg-white/15 disabled:opacity-30 rounded-full text-white transition-opacity"
+        >
+          <ChevronRight className="w-5 h-5" />
+        </button>
+      </div>
+
+    </div>
+  );
+}
+
+```
